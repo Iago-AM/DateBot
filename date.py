@@ -1,214 +1,202 @@
-'''
-DATE
-
-Author: Iago Monte
-'''
-
 import discord
 from discord.ext import commands, tasks
-from discord.utils import get
+from discord import app_commands
 import asyncio
-from itertools import cycle
 import pandas as pd
+import os
+from itertools import cycle
 
-bot = commands.Bot(command_prefix = '!', intents = discord.Intents.all())
-status = cycle(['Qualquer dúvida, fale com um dos nossos administradores', '!login para se cadastrar'])
-df = pd.read_excel('Banco de Dados.xlsx')
+intents = discord.Intents.all()
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+DATA_FILE = 'Banco de Dados.xlsx'
+
+status = cycle([
+    'Qualquer dúvida, fale com um dos nossos administradores',
+    '/login para se cadastrar'
+])
+
+# ---------------- UTILS ---------------- #
+
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return pd.DataFrame()
+    return pd.read_excel(DATA_FILE)
+
+def save_data(df):
+    df.to_excel(DATA_FILE, index=False)
+
+def is_yes(msg):
+    return msg.lower() in ['sim', 's', 'yes', 'y']
+
+# ---------------- EVENTS ---------------- #
 
 @bot.event
 async def on_ready():
+    await bot.tree.sync()
     change_status.start()
-    print("Estou pronto!")
+    print(f'Logado como {bot.user}')
 
-
-@tasks.loop(seconds=10)
+@tasks.loop(seconds=15)
 async def change_status():
     await bot.change_presence(activity=discord.Game(next(status)))
 
+# ---------------- LOGIN ---------------- #
 
-# @bot.command(aliases=['login', 'matricula', 'registrar', 'registro'])
-@bot.command()
-async def login(ctx):
-    await ctx.channel.purge(limit=20)
-    await ctx.author.send("Digite seu nome completo (incluindo acentos): ")
-    
+@bot.tree.command(name="login", description="Cadastrar no sistema acadêmico")
+async def login(interaction: discord.Interaction):
+
+    await interaction.response.send_message(
+        "📩 Vou te chamar no privado para continuar!",
+        ephemeral=True
+    )
+
+    user = interaction.user
+
+    # tenta abrir DM
     try:
-        message = await bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=60.0)
+        await user.send("Digite seu nome completo (com acentos):")
+    except discord.Forbidden:
+        return await interaction.followup.send(
+            "❌ Não consegui te mandar DM. Ative mensagens privadas.",
+            ephemeral=True
+        )
 
+    def check(m):
+        return m.author == user and isinstance(m.channel, discord.DMChannel)
+
+    # recebe nome
+    try:
+        msg = await bot.wait_for("message", check=check, timeout=60)
     except asyncio.TimeoutError:
-        await ctx.author.send("Tempo limite expirado! Tente novamente")
+        return await user.send("⏰ Tempo expirado.")
 
-    else:
-        if message.content.isnumeric() == True:
-            await ctx.author.send("Seu nome não está correto!")
+    nome = msg.content.upper()
 
-        if message.content.isnumeric() == False:
-            nomecompleto = message.content
-            nomecompleto = nomecompleto.upper()
-            await ctx.author.send("Estamos verificando sua matrícula, não digite nada até que a operação seja concluída...")
-            try:
-                index = df.loc[df["NOME COMPLETO"] == nomecompleto].index.item()
-                nome = df.loc[index, "NOME COMPLETO"]
-                curso = df.loc[index, "CURSO"]
-                matricula = df.loc[index, "MATRICULA"]
-                
-                try:
-                    await ctx.author.send(f'Você confirma que é: {nome}, aluno(a) de: {curso}, sob a matrícula: {matricula}? (Sim/Não)')
+    if nome.isnumeric():
+        return await user.send("❌ Nome inválido.")
 
-                    try:
-                        message = await bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=60.0)
-                        message.content = message.content.lower()
-
-                        if message.content == "sim" or message.content == "s":
-                            if df.loc[index, "DISCORD"] == 0:
-                                await ctx.author.send('Cadastro realizado, agora você pode usar o DateDiscord normalmente!')
-                                df.loc[index, "DISCORD"] = message.author.id
-                                channel = bot.get_channel(1024815448820297798)
-                                role = discord.utils.get(ctx.author.guild.roles, name='Estudante')
-                                await ctx.author.add_roles(role)
-                                role = discord.utils.get(ctx.author.guild.roles, name='Não Registrado')
-                                await ctx.author.remove_roles(role)
-                                iddiscord = ctx.author.id
-                                #await channel.send(f'{nome} < ADICIONADO A > <@{iddiscord}>')
-                                embed = discord.Embed(
-                                    description= f'{nome} < ADICIONADO A > <@{iddiscord}>',
-                                    colour=0x00FF00,
-                                )
-                                embed.set_footer(text='Adicionado a ' + ctx.author.name, icon_url=ctx.author.avatar.url)
-
-                                await channel.send(embed=embed)
-                                df.to_excel('Banco de Dados.xlsx', index=False)
-
-                            else:
-                                await ctx.author.send('Opa! Parece que alguém já está usando esse usuário. Caso você pense que houve algum engano, contate um de nossos administradores.')
-                    
-                        else:
-                            await ctx.author.send('Não? Sugiro que tente novamente ou contate um de nossos administradores!')        
-
-                    except asyncio.TimeoutError:
-                        await ctx.author.send("Tempo limite expirado! Tente novamente")       
-                
-                except asyncio.TimeoutError:
-                    await ctx.author.send("Tempo limite expirado! Tente novamente")
-            
-            except:
-                await ctx.author.send('Parece que não encontramos seu nome no banco de dados. Tente adicionar/remover acentos, ou contate um de nossos administradores')
-
-
-
-@bot.command(aliases=['remover', 'delete', 'del'])
-@commands.has_role("Date")
-async def remove(ctx, member: discord.Member, *, message):
-    nomecompleto = message.upper()
+    df = load_data()
 
     try:
-        index = df.loc[df["NOME COMPLETO"] == nomecompleto].index.item()
+        index = df.loc[df["NOME COMPLETO"] == nome].index.item()
+    except ValueError:
+        return await user.send("❌ Nome não encontrado no banco de dados.")
 
-    except:
-        await ctx.reply('Nome incorreto, tente adicionar/remover os acentos ou busque no banco de dados!')
+    aluno = df.loc[index]
 
-    else:
-        nome = df.loc[index, "NOME COMPLETO"]
-        curso = df.loc[index, "CURSO"]
-        matricula = df.loc[index, "MATRICULA"]
-        await ctx.send(f'Você deseja remover o link de: {nome} ({matricula} - {curso}) com o perfil {member.mention}? Essa operação é irreversível (Sim/Não)')
+    # confirmação
+    await user.send(
+        f"Você confirma?\n\n"
+        f"**{aluno['NOME COMPLETO']}**\n"
+        f"{aluno['CURSO']}\n"
+        f"Matrícula: {aluno['MATRICULA']}\n\n"
+        f"(Sim/Não)"
+    )
 
-        try:
-            message = await bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=60.0)
-            message.content = message.content.lower()
-
-            if message.content == "sim" or message.content == "s":
-                if df.loc[index, "DISCORD"] != 0:
-                    df.loc[index, "DISCORD"] = 0
-                    await member.edit(roles=[])
-                    role = discord.utils.get(member.guild.roles, name='Não Registrado')
-                    await member.add_roles(role)
-                    await ctx.send(f'Operação realizada com sucesso! {nome} perdeu seu acesso ao servidor')
-                    iddiscord = member.id
-                    channel = bot.get_channel(1024815448820297798)
-                    #await channel.send(f'{nome} < REMOVIDO DE > <@{iddiscord}>')
-
-                    embed = discord.Embed(
-                        description= f'{nome} < REMOVIDO DE > <@{iddiscord}>',
-                        colour=0xFF0000,
-                    )
-                    embed.set_footer(text='Removido por ' + ctx.author.name, icon_url=ctx.author.avatar.url)
-
-                    await channel.send(embed=embed)
-                    df.to_excel('Banco de Dados.xlsx', index=False)
-
-                else:
-                    await ctx.send(f'Parece que {nome} não tem nenhuma Discord ID associada a ele.')
-                    
-            else:
-                await ctx.send('Operação cancelada!')
-
-        except asyncio.TimeoutError:
-            await ctx.send('Tempo expirado!')
-
-
-@bot.command(aliases=['cadastrar', 'add', 'register', 'registro', 'cadastro'])
-@commands.has_role("Date")
-async def registrar(ctx, member: discord.Member, *, message):
-    nomecompleto = message.upper()
-    
     try:
-        index = df.loc[df["NOME COMPLETO"] == nomecompleto].index.item()
+        confirm = await bot.wait_for("message", check=check, timeout=60)
+    except asyncio.TimeoutError:
+        return await user.send("⏰ Tempo expirado.")
 
-    except:
-        await ctx.reply('Nome incorreto, tente adicionar/remover os acentos ou busque no banco de dados!')
+    if not is_yes(confirm.content):
+        return await user.send("❌ Cadastro cancelado.")
 
-    else:
-        nome = df.loc[index, "NOME COMPLETO"]
-        curso = df.loc[index, "CURSO"]
-        matricula = df.loc[index, "MATRICULA"]
-        await ctx.send(f'Você deseja registrar: {nome} ({matricula} - {curso}) a {member.mention}? (Sim/Não)')
+    if aluno["DISCORD"] != 0:
+        return await user.send("⚠️ Esse aluno já está cadastrado.")
 
-        try:
-            message = await bot.wait_for("message", check=lambda m: m.author == ctx.author, timeout=60.0)
-            message.content = message.content.lower()
+    # salva ID
+    df.loc[index, "DISCORD"] = user.id
+    save_data(df)
 
-            if message.content == "sim" or message.content == "s":
-                if df.loc[index, "DISCORD"] == 0:
-                    df.loc[index, "DISCORD"] = member.id
-                    await ctx.send(f'Operação realizada com sucesso! {nome} cadastrado(a) ao servidor')
-                    channel = bot.get_channel(1024815448820297798)
-                    role = discord.utils.get(member.guild.roles, name='Estudante')
-                    await member.add_roles(role)
-                    role = discord.utils.get(member.guild.roles, name='Não Registrado')
-                    await member.remove_roles(role)
-                    iddiscord = member.id
-                    #await channel.send(f'{nome} < ADICIONADO A > <@{iddiscord}>')
+    # roles (no servidor)
+    guild = interaction.guild
+    member = guild.get_member(user.id)
 
-                    embed = discord.Embed(
-                        description= f'{nome} < ADICIONADO A > <@{iddiscord}>',
-                        colour=0x00FF00,
-                    )
-                    embed.set_footer(text='Adicionado por ' + ctx.author.name, icon_url=ctx.author.avatar.url)
+    role_ok = discord.utils.get(guild.roles, name='Estudante')
+    role_not = discord.utils.get(guild.roles, name='Não Registrado')
 
-                    await channel.send(embed=embed)
-                    df.to_excel('Banco de Dados.xlsx', index=False)
+    if member:
+        await member.add_roles(role_ok)
+        await member.remove_roles(role_not)
 
+    # log
+    log_channel = guild.get_channel('ID_DO_CANAL_DE_LOGS - sem as aspas')
 
-                else:
-                    await ctx.send(f'Parece que {nome} já está cadastrado no servidor.')
+    embed = discord.Embed(
+        title='Novo Aluno Adicionado',
+        description=f"{aluno['NOME COMPLETO']} <=> {member.mention}",
+        color=0x00FF00
+    )
 
-            else:
-                await ctx.send('Operação Cancelada!')
+    await log_channel.send(embed=embed)
 
-        except asyncio.TimeoutError:
-            await ctx.send('Tempo expirado!')
+    await user.send("✅ Cadastro realizado com sucesso!")
 
+# ---------------- REGISTRAR (ADMIN) ---------------- #
 
+@bot.tree.command(name="registrar", description="Registrar aluno manualmente")
+@app_commands.describe(
+    membro="Usuário do Discord",
+    nome="Nome completo do aluno"
+)
+async def registrar(interaction: discord.Interaction, membro: discord.Member, nome: str):
 
-@bot.command(aliases=['apagar', 'clear'])
-@commands.has_role("Date")
-async def purge(ctx, amount):
-    quantidade = int(amount)
-    await ctx.channel.purge(limit=quantidade)
+    if not any(role.name == "NOME_DO_CARGO" for role in interaction.user.roles):
+        return await interaction.response.send_message(
+            "❌ Você não tem permissão.",
+            ephemeral=True
+        )
 
+    df = load_data()
+    nome = nome.upper()
 
-#-------------------------------------------------------------------------------------------------#
+    try:
+        index = df.loc[df["NOME COMPLETO"] == nome].index.item()
+    except ValueError:
+        return await interaction.response.send_message(
+            "❌ Nome não encontrado.",
+            ephemeral=True
+        )
 
+    aluno = df.loc[index]
 
-bot.run('TOKEN')
+    await interaction.response.send_message(
+        f"Confirmar registro?\n\n{aluno['NOME COMPLETO']} → {membro.mention}",
+        ephemeral=True
+    )
+
+    df.loc[index, "DISCORD"] = membro.id
+    save_data(df)
+
+    role_ok = discord.utils.get(interaction.guild.roles, name='NOME_REGISTRADO')
+    role_not = discord.utils.get(interaction.guild.roles, name='NOME_NAO_REGISTRADO')
+
+    await membro.add_roles(role_ok)
+    await membro.remove_roles(role_not)
+
+# ---------------- PURGE ---------------- #
+
+@bot.tree.command(name="limpar", description="Apagar mensagens")
+@app_commands.describe(quantidade="Quantidade de mensagens")
+async def limpar(interaction: discord.Interaction, quantidade: int):
+
+    if not any(role.name == "Date" for role in interaction.user.roles):
+        return await interaction.response.send_message(
+            "❌ Sem permissão.",
+            ephemeral=True
+        )
+
+    await interaction.channel.purge(limit=quantidade)
+
+    await interaction.response.send_message(
+        f"🧹 {quantidade} mensagens apagadas.",
+        ephemeral=True
+    )
+
+# ---------------- RUN ---------------- #
+
+with open("token.txt", "r") as f:
+    TOKEN = f.read().strip()
+
+bot.run(TOKEN)
